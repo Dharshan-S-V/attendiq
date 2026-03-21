@@ -1,0 +1,26 @@
+{
+  "name": "attendiq",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "db:push": "node lib/db-init.js"
+  },
+  "dependencies": {
+    "next": "14.1.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "@neondatabase/serverless": "^0.9.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "qrcode": "^1.5.3",
+    "cookie": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.11.5",
+    "@types/react": "18.2.48",
+    "typescript": "5.3.3"
+  }
+}
