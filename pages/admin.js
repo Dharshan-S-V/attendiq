@@ -3,13 +3,18 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
 
+const ALL_DEPTS = [
+  'CSE-A','CSE-B','CSE-C','AIDS','AIML','CSBS','IT',
+  'EEE','ECE-A','ECE-B','CHEMICAL','BME','CIVIL','MECHANICAL'
+];
+
 export default function Admin() {
   const router = useRouter();
   const [admin, setAdmin]           = useState(null);
   const [tab, setTab]               = useState('sessions');
   const [sessions, setSessions]     = useState([]);
   const [records, setRecords]       = useState([]);
-  const [stats, setStats]           = useState({ total:0, present:0, absent:0, rate:0 });
+  const [stats, setStats]           = useState({ total:0, present:0, absent:0 });
   const [activeQR, setActiveQR]     = useState(null);
   const [form, setForm]             = useState({ subject:'', section:'', location:'', lat:'', lng:'', radius:'50', date:'', timeSlot:'', expiryMinutes:'30' });
   const [formErr, setFormErr]       = useState('');
@@ -30,7 +35,9 @@ export default function Admin() {
     fetch('/api/sessions').then(r => r.ok && r.json()).then(d => d && setSessions(d.sessions)), []);
 
   const loadRecords = useCallback(() =>
-    fetch('/api/records').then(r => r.ok && r.json()).then(d => d && (setRecords(d.records), setStats(d.stats))), []);
+    fetch('/api/records').then(r => r.ok && r.json()).then(d => {
+      if (d) { setRecords(d.records); setStats(d.stats); }
+    }), []);
 
   useEffect(() => { if (admin) { loadSessions(); loadRecords(); } }, [admin]);
 
@@ -39,7 +46,13 @@ export default function Admin() {
     try {
       const r = await fetch('/api/sessions', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ subject:form.subject, section:form.section, location:form.location, lat:parseFloat(form.lat), lng:parseFloat(form.lng), radius:parseInt(form.radius)||50, date:form.date, timeSlot:form.timeSlot, expiryMinutes:parseInt(form.expiryMinutes) })
+        body: JSON.stringify({
+          subject: form.subject, section: form.section, location: form.location,
+          lat: parseFloat(form.lat), lng: parseFloat(form.lng),
+          radius: parseInt(form.radius)||50,
+          date: form.date, timeSlot: form.timeSlot,
+          expiryMinutes: parseInt(form.expiryMinutes)
+        })
       });
       const d = await r.json();
       if (!r.ok) { setFormErr(d.error); return; }
@@ -64,20 +77,28 @@ export default function Admin() {
     );
   }
 
-  function showToast(msg, type='ok') { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); }
+  function showToast(msg, type='ok') { setToast({ msg, type }); setTimeout(() => setToast(null), 3200); }
 
   function exportCSV() {
-    const rows = [['#','Name','Roll','Reg No','Department','Year','Subject','Status','Distance(m)','Date','Time','Lat','Lng']];
-    filtered.forEach((r,i) => rows.push([i+1,r.name,r.roll,r.reg_no||'',r.department,r.year+' Year',r.subject,r.status,r.distance,r.marked_at?.split('T')[0],new Date(r.marked_at).toLocaleTimeString(),r.lat,r.lng]));
+    const rows = [['#','Name','Roll','Email','Department','Year','Subject','Status','Distance(m)','GPS Accuracy(m)','Date','Time','Lat','Lng']];
+    filtered.forEach((r,i) => rows.push([
+      i+1, r.name, r.roll, r.email||'',
+      r.department, r.year+' Year', r.subject, r.status,
+      r.distance, r.accuracy,
+      r.marked_at?.split('T')[0], new Date(r.marked_at).toLocaleTimeString(),
+      r.lat, r.lng
+    ]));
     const csv = rows.map(r => r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download='AttendIQ_Records.csv'; a.click();
-    showToast('Exported!');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    a.download = 'AttendIQ_Records.csv'; a.click();
+    showToast('CSV exported!');
   }
 
-  const allDepts = [...new Set(records.map(r=>r.department).filter(Boolean))];
+  const allDepts = [...new Set(records.map(r=>r.department).filter(Boolean))].sort();
   const filtered = records.filter(r => {
     const q = search.toLowerCase();
-    return (!q || [r.name,r.roll,r.reg_no,r.department,r.subject].some(v=>v&&v.toLowerCase().includes(q)))
+    return (!q || [r.name, r.roll, r.email, r.department, r.subject].some(v=>v&&v.toLowerCase().includes(q)))
       && (!filterStatus || r.status===filterStatus)
       && (!filterDept   || r.department===filterDept)
       && (!filterYear   || r.year===filterYear);
@@ -94,7 +115,8 @@ export default function Admin() {
         <div style={S.brand}><div style={S.dot}/>AttendIQ</div>
         <div style={{display:'flex',gap:'3px'}}>
           {[['sessions','⚙ Sessions'],['records','📊 Records']].map(([t,l])=>(
-            <button key={t} style={{...S.np,...(tab===t?S.npOn:{})}} onClick={()=>{setTab(t);if(t==='records')loadRecords();}}>{l}</button>
+            <button key={t} style={{...S.np,...(tab===t?S.npOn:{})}}
+              onClick={()=>{setTab(t);if(t==='records')loadRecords();}}>{l}</button>
           ))}
         </div>
         <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
@@ -108,10 +130,8 @@ export default function Admin() {
         {/* ════ SESSIONS ════ */}
         {tab==='sessions' && (
           <div style={S.wrap}>
-            <div style={S.sh}><h2 style={S.h2}>Session Manager</h2><p style={S.shp}>Create GPS-locked QR codes. Student scans → browser opens → GPS verified → saved to database.</p></div>
+            <div style={S.sh}><h2 style={S.h2}>Session Manager</h2><p style={S.shp}>Create GPS-locked QR codes for attendance</p></div>
             <div style={S.grid2}>
-
-              {/* Generator */}
               <div style={S.card}>
                 <div style={S.ch}>Generate Attendance QR</div>
                 <div style={S.cs}>Session saved to PostgreSQL — works across all devices</div>
@@ -127,7 +147,7 @@ export default function Admin() {
                     <FG label="Radius (m)"><Inp type="number" value={form.radius} onChange={v=>setForm(f=>({...f,radius:v}))} min="5" max="500"/></FG>
                   </div>
                   <button type="button" onClick={myLocation} style={S.smBtn}>📍 Use My Location</button>
-                  <p style={S.hint}>💡 Upper floors: use building's lat/lng. Radius 30–80m covers multi-floor buildings.</p>
+                  <p style={S.hint}>💡 Upper floors: use building's lat/lng. The system adds GPS accuracy buffer automatically — no need to inflate the radius.</p>
                   <div style={S.dv}/>
                   <div style={S.r2}>
                     <FG label="Date"><Inp type="date" value={form.date} onChange={v=>setForm(f=>({...f,date:v}))}/></FG>
@@ -146,12 +166,11 @@ export default function Admin() {
                 </form>
               </div>
 
-              {/* Right */}
               <div>
                 {activeQR && (
                   <div style={S.card}>
                     <div style={S.ch}>QR Code Ready ✅</div>
-                    <div style={S.cs}>Students scan → browser opens form → GPS checked → saved to DB</div>
+                    <div style={S.cs}>Students scan → browser opens → fill details → GPS verified → saved to DB</div>
                     <QRDisplay session={activeQR.session} url={activeQR.url} onDelete={deleteSession}/>
                   </div>
                 )}
@@ -160,7 +179,11 @@ export default function Admin() {
                   <div style={{fontSize:'12px',color:'var(--mut)',marginBottom:'13px'}}>Click to regenerate QR</div>
                   {sessions.length===0
                     ? <Empty icon="📋" text="No sessions yet"/>
-                    : sessions.map(s=><SessItem key={s.id} s={s} onClick={()=>setActiveQR({session:s,url:window.location.origin+'/attend?s='+s.id})} onDelete={deleteSession}/>)
+                    : sessions.map(s=>(
+                        <SessItem key={s.id} s={s}
+                          onClick={()=>setActiveQR({session:s,url:window.location.origin+'/attend?s='+s.id})}
+                          onDelete={deleteSession}/>
+                      ))
                   }
                 </div>
               </div>
@@ -171,42 +194,68 @@ export default function Admin() {
         {/* ════ RECORDS ════ */}
         {tab==='records' && (
           <div style={S.wrap}>
-            <div style={S.sh}><h2 style={S.h2}>Attendance Records</h2><p style={S.shp}>Stored in PostgreSQL — persistent across all devices and sessions</p></div>
+            <div style={S.sh}><h2 style={S.h2}>Attendance Records</h2><p style={S.shp}>Stored in PostgreSQL — persistent across all devices</p></div>
+
+            {/* Stats — no Rate */}
             <div style={S.statsGrid}>
-              {[['Total',stats.total,'rgba(59,130,246,.3)','var(--acc)'],['Present',stats.present,'rgba(34,197,94,.3)','var(--grn)'],['Absent',stats.absent,'rgba(239,68,68,.3)','var(--red)'],['Rate',stats.rate+'%','var(--bor)','var(--txt)']].map(([l,v,bc,vc])=>(
-                <div key={l} style={{...S.sc,borderColor:bc}}><div style={{fontSize:'28px',fontWeight:800,color:vc,letterSpacing:'-1px'}}>{v}</div><div style={{fontSize:'11px',color:'var(--mut)',marginTop:'3px'}}>{l}</div></div>
+              {[
+                ['Total',   stats.total,   'rgba(59,130,246,.3)', 'var(--acc)'],
+                ['Present', stats.present, 'rgba(34,197,94,.3)',  'var(--grn)'],
+                ['Absent',  stats.absent,  'rgba(239,68,68,.3)',  'var(--red)'],
+              ].map(([l,v,bc,vc])=>(
+                <div key={l} style={{...S.sc,borderColor:bc}}>
+                  <div style={{fontSize:'28px',fontWeight:800,color:vc,letterSpacing:'-1px'}}>{v}</div>
+                  <div style={{fontSize:'11px',color:'var(--mut)',marginTop:'3px'}}>{l}</div>
+                </div>
               ))}
             </div>
+
             <div style={S.card}>
               <div style={S.fbar}>
-                <input style={{...S.finp,maxWidth:'200px'}} placeholder="🔍 Name, roll, dept…" value={search} onChange={e=>setSearch(e.target.value)}/>
-                <select style={S.fsel} value={filterStatus} onChange={e=>setFS(e.target.value)}><option value="">All Status</option><option value="present">Present</option><option value="absent">Absent</option></select>
-                <select style={S.fsel} value={filterDept} onChange={e=>setFD(e.target.value)}><option value="">All Departments</option>{allDepts.map(d=><option key={d} value={d}>{d}</option>)}</select>
-                <select style={S.fsel} value={filterYear} onChange={e=>setFY(e.target.value)}><option value="">All Years</option>{['I','II','III','IV'].map(y=><option key={y} value={y}>{y} Year</option>)}</select>
+                <input style={{...S.finp,maxWidth:'200px'}} placeholder="🔍 Name, roll, email…"
+                  value={search} onChange={e=>setSearch(e.target.value)}/>
+                <select style={S.fsel} value={filterStatus} onChange={e=>setFS(e.target.value)}>
+                  <option value="">All Status</option><option value="present">Present</option><option value="absent">Absent</option>
+                </select>
+                <select style={S.fsel} value={filterDept} onChange={e=>setFD(e.target.value)}>
+                  <option value="">All Departments</option>
+                  {allDepts.map(d=><option key={d} value={d}>{d}</option>)}
+                </select>
+                <select style={S.fsel} value={filterYear} onChange={e=>setFY(e.target.value)}>
+                  <option value="">All Years</option>
+                  {['I','II','III','IV'].map(y=><option key={y} value={y}>{y} Year</option>)}
+                </select>
                 <button style={S.smBtn} onClick={exportCSV}>⬇ CSV</button>
-                <button style={S.smBtn} onClick={()=>{loadRecords();showToast('Refreshed');}}>↻</button>
+                <button style={S.smBtn} onClick={()=>{loadRecords();showToast('Refreshed');}}>↻ Refresh</button>
               </div>
+
               <div style={S.twrap}>
                 <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
-                  <thead><tr>{['#','Name','Roll','Reg No','Department','Year','Subject','Status','Distance','Time','Map'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                  <thead>
+                    <tr>
+                      {['#','Name','Roll','Email','Dept','Year','Subject','Status','Distance','Time','Map'].map(h=>(
+                        <th key={h} style={S.th}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
                   <tbody>
                     {filtered.length===0
                       ? <tr><td colSpan={11}><Empty icon="📭" text="No records found"/></td></tr>
                       : filtered.map((r,i)=>(
-                        <tr key={r.id}>
-                          <td style={{...S.td,...S.mono,color:'var(--mut)'}}>{i+1}</td>
-                          <td style={{...S.td,fontWeight:700}}>{r.name}</td>
-                          <td style={{...S.td,...S.mono}}>{r.roll}</td>
-                          <td style={{...S.td,...S.mono,color:'var(--m2)'}}>{r.reg_no||'—'}</td>
-                          <td style={{...S.td,fontSize:'12px'}}>{r.department}</td>
-                          <td style={S.td}><span style={S.bb2}>{r.year} Yr</span></td>
-                          <td style={{...S.td,fontSize:'12px',maxWidth:'120px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={r.subject}>{r.subject}</td>
-                          <td style={S.td}><span style={r.status==='present'?S.bdgG:S.bdgR}>● {r.status}</span></td>
-                          <td style={S.td}><span style={S.rpill}>{r.distance}m</span></td>
-                          <td style={{...S.td,...S.mono,whiteSpace:'nowrap',fontSize:'10px'}}>{new Date(r.marked_at).toLocaleString()}</td>
-                          <td style={S.td}><a href={`https://maps.google.com/maps?q=${r.lat},${r.lng}`} target="_blank" rel="noreferrer" style={S.ml}>🗺</a></td>
-                        </tr>
-                      ))
+                          <tr key={r.id}>
+                            <td style={{...S.td,...S.mono,color:'var(--mut)'}}>{i+1}</td>
+                            <td style={{...S.td,fontWeight:700}}>{r.name}</td>
+                            <td style={{...S.td,...S.mono}}>{r.roll}</td>
+                            <td style={{...S.td,fontSize:'12px',color:'var(--m2)'}}>{r.email||'—'}</td>
+                            <td style={{...S.td,fontSize:'12px'}}>{r.department}</td>
+                            <td style={S.td}><span style={S.bb2}>{r.year} Yr</span></td>
+                            <td style={{...S.td,fontSize:'12px',maxWidth:'120px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={r.subject}>{r.subject}</td>
+                            <td style={S.td}><span style={r.status==='present'?S.bdgG:S.bdgR}>● {r.status}</span></td>
+                            <td style={S.td}><span style={S.rpill}>{r.distance}m</span></td>
+                            <td style={{...S.td,...S.mono,whiteSpace:'nowrap',fontSize:'10px'}}>{new Date(r.marked_at).toLocaleString()}</td>
+                            <td style={S.td}><a href={`https://maps.google.com/maps?q=${r.lat},${r.lng}`} target="_blank" rel="noreferrer" style={S.ml}>🗺</a></td>
+                          </tr>
+                        ))
                     }
                   </tbody>
                 </table>
@@ -216,13 +265,16 @@ export default function Admin() {
         )}
       </div>
 
-      {toast && <div style={{...S.toast,borderColor:toast.type==='er'?'rgba(239,68,68,.4)':'rgba(34,197,94,.4)'}}>{toast.type==='er'?'❌':'✅'} {toast.msg}</div>}
+      {toast && (
+        <div style={{...S.toast,borderColor:toast.type==='er'?'rgba(239,68,68,.4)':'rgba(34,197,94,.4)'}}>
+          {toast.type==='er'?'❌':'✅'} {toast.msg}
+        </div>
+      )}
     </>
   );
 }
 
-// ── Components ──────────────────────────────────────────────
-
+// ── QR Display ──────────────────────────────────────────
 function QRDisplay({ session, url, onDelete }) {
   const [src, setSrc]       = useState('');
   const [copied, setCopied] = useState(false);
@@ -248,16 +300,13 @@ function QRDisplay({ session, url, onDelete }) {
         <span style={{fontSize:'12px',color:'var(--m2)'}}>📍 {session.location}{session.date?' · '+session.date:''}</span>
       </div>
       <div style={{background:'var(--s3)',border:'1px solid var(--bor)',borderRadius:'10px',padding:'12px 14px',width:'100%'}}>
-        <div style={{fontSize:'10px',color:'var(--mut)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:'5px'}}>Student Attendance URL</div>
+        <div style={{fontSize:'10px',color:'var(--mut)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:'5px'}}>Student URL</div>
         <div style={{fontFamily:'var(--mono)',fontSize:'10px',color:'var(--m2)',wordBreak:'break-all',lineHeight:'1.5'}}>{url}</div>
         <div style={{display:'flex',gap:'8px',marginTop:'10px',flexWrap:'wrap'}}>
           <button style={S.smBtn} onClick={copy}>{copied?'✓ Copied!':'📋 Copy URL'}</button>
           <button style={S.smBtn} onClick={dl}>⬇ PNG</button>
           <button style={{...S.smBtn,color:'var(--red)',borderColor:'rgba(239,68,68,.3)'}} onClick={()=>onDelete(session.id)}>🗑 Delete</button>
         </div>
-        <p style={{fontSize:'11px',color:'var(--mut)',marginTop:'8px',lineHeight:'1.5'}}>
-          💡 After deploying to Vercel, the QR encodes <code style={{fontFamily:'var(--mono)',fontSize:'10px'}}>https://your-app.vercel.app/attend?s={session.id}</code> — scanning opens the student form instantly in the browser.
-        </p>
       </div>
     </div>
   );
@@ -280,7 +329,8 @@ function SessItem({ s, onClick, onDelete }) {
       <div style={{textAlign:'right',flexShrink:0,marginLeft:'12px'}}>
         <div style={{fontSize:'22px',fontWeight:800,color:'var(--acc)',lineHeight:1}}>{s.response_count||0}</div>
         <div style={{fontSize:'10px',color:'var(--mut)'}}>total</div>
-        <button style={{...S.smBtn,fontSize:'11px',marginTop:'6px',color:'var(--red)',borderColor:'rgba(239,68,68,.25)',padding:'4px 9px'}} onClick={e=>{e.stopPropagation();onDelete(s.id);}}>🗑</button>
+        <button style={{...S.smBtn,fontSize:'11px',marginTop:'6px',color:'var(--red)',borderColor:'rgba(239,68,68,.25)',padding:'4px 9px'}}
+          onClick={e=>{e.stopPropagation();onDelete(s.id);}}>🗑</button>
       </div>
     </div>
   );
@@ -314,7 +364,8 @@ const S = {
   r2:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'13px'},
   r3:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'13px'},
   grid2:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'20px'},
-  statsGrid:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'13px',marginBottom:'22px'},
+  // 3 stat cards (no Rate)
+  statsGrid:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'13px',marginBottom:'22px'},
   sc:{background:'var(--sur)',border:'1px solid',borderRadius:'12px',padding:'17px'},
   fbar:{display:'flex',gap:'9px',marginBottom:'16px',flexWrap:'wrap',alignItems:'center'},
   finp:{flex:1,padding:'9px 12px',background:'var(--s2)',border:'1px solid var(--bor)',borderRadius:'8px',color:'var(--txt)',fontSize:'13px',outline:'none'},

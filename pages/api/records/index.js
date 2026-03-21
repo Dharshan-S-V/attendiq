@@ -13,8 +13,9 @@ export default async function handler(req, res) {
   try {
     let rows;
     if (sessionId) {
-      // Verify session belongs to admin
-      const sCheck = await sql`SELECT id FROM sessions WHERE id = ${sessionId} AND admin_id = ${admin.id}`;
+      const sCheck = await sql`
+        SELECT id FROM sessions WHERE id = ${sessionId} AND admin_id = ${admin.id}
+      `;
       if (!sCheck.length) return res.status(403).json({ error: 'Forbidden' });
 
       rows = await sql`
@@ -34,14 +35,14 @@ export default async function handler(req, res) {
       `;
     }
 
-    // Stats
     const total   = rows.length;
     const present = rows.filter(r => r.status === 'present').length;
+    const absent  = total - present;
 
+    // No rate — just total, present, absent
     res.json({
       records: rows,
-      stats: { total, present, absent: total - present,
-        rate: total ? Math.round((present / total) * 100) : 0 }
+      stats: { total, present, absent }
     });
   } catch (e) {
     console.error(e);
