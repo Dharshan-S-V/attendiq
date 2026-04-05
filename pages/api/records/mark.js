@@ -35,8 +35,8 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Invalid GPS coordinates' });
   }
 
-  const cleanRoll   = roll.trim().toLowerCase();
-  const cleanEmail  = email.trim().toLowerCase();
+  const cleanRoll = roll.trim().toLowerCase();
+  const cleanEmail = email.trim().toLowerCase();
   const cleanDevice = deviceId ? deviceId.trim() : null;
 
   try {
@@ -51,7 +51,7 @@ export default async function handler(req, res) {
 
     const classLat = parseFloat(s.lat);
     const classLng = parseFloat(s.lng);
-    const radius   = parseInt(s.radius);
+    const radius = parseInt(s.radius);
 
     if (isNaN(classLat) || isNaN(classLng)) {
       return res.status(500).json({ error: 'Session location invalid. Contact admin.' });
@@ -101,8 +101,9 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── STRICT GPS CHECK — exact radius, no buffer ──
-    const geo    = checkPresence(studentLat, studentLng, classLat, classLng, radius);
+    // ── GPS CHECK — accuracy-compensated ──
+    const studentAccuracy = parseFloat(accuracy) || 0;
+    const geo = checkPresence(studentLat, studentLng, classLat, classLng, radius, studentAccuracy);
     const status = geo.inRange ? 'present' : 'absent';
 
     // ── Save record ──
@@ -127,11 +128,13 @@ export default async function handler(req, res) {
     `;
 
     res.status(201).json({
-      ok:       true,
-      record:   rows[0],
+      ok: true,
+      record: rows[0],
       status,
-      distance: geo.distance,
-      radius:   radius,
+      distance: geo.distance,          // accuracy-compensated
+      rawDistance: geo.rawDistance,        // original Haversine
+      accuracy: geo.accuracy,
+      effectiveRadius: geo.effectiveRadius,
     });
 
   } catch (e) {
