@@ -1,6 +1,6 @@
 // pages/api/records/mark.js
 import sql from '../../../lib/db';
-import { isWithinRange } from '../../../lib/geo';
+import { checkPresence } from '../../../lib/geo';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
@@ -8,12 +8,13 @@ export default async function handler(req, res) {
   const {
     sessionId, name, roll, email,
     department, year,
-    lat, lng, accuracy
+    lat, lng, accuracy,
+    deviceId   // unique device fingerprint from phone's localStorage
   } = req.body;
 
-  // ── Validation ──
+  // ── Basic validation ──
   if (!sessionId || !name || !roll || !department || !year) {
-    return res.status(400).json({ error: 'Missing required fields (name, roll, department, year)' });
+    return res.status(400).json({ error: 'Missing required fields' });
   }
   if (!email || !email.includes('@')) {
     return res.status(400).json({ error: 'Valid email is required' });
@@ -22,20 +23,21 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'GPS location is required' });
   }
 
-  // Roll number format: e.g. 23am019 (2 digits + 2-4 letters + 3 digits)
-  const rollRegex = /^\d{2}[a-zA-Z]{2,4}\d{3}$/;
-  if (!rollRegex.test(roll.trim())) {
-    return res.status(400).json({ error: 'Invalid roll number format. Use format like 23am019' });
+  // Roll format: 23am019
+  if (!/^\d{2}[a-zA-Z]{2,4}\d{3}$/.test(roll.trim())) {
+    return res.status(400).json({ error: 'Invalid roll number. Format: 23am019' });
   }
 
-  // Ensure lat/lng are proper numbers (not strings)
   const studentLat = parseFloat(lat);
   const studentLng = parseFloat(lng);
-  const gpsAccuracy = parseFloat(accuracy) || 50; // default 50m if unknown
 
   if (isNaN(studentLat) || isNaN(studentLng)) {
-    return res.status(400).json({ error: 'Invalid GPS coordinates received' });
+    return res.status(400).json({ error: 'Invalid GPS coordinates' });
   }
+
+  const cleanRoll   = roll.trim().toLowerCase();
+  const cleanEmail  = email.trim().toLowerCase();
+  const cleanDevice = deviceId ? deviceId.trim() : null;
 
   try {
     // ── Fetch session ──
@@ -44,88 +46,103 @@ export default async function handler(req, res) {
 
     const s = sRows[0];
     if (s.expires_at && new Date(s.expires_at) < new Date()) {
-      return res.status(410).json({ error: 'This QR session has expired. Ask your faculty for a new one.' });
+      return res.status(410).json({ error: 'QR session has expired. Ask faculty for a new one.' });
     }
 
-    // Ensure session lat/lng are numbers
     const classLat = parseFloat(s.lat);
     const classLng = parseFloat(s.lng);
     const radius   = parseInt(s.radius);
 
     if (isNaN(classLat) || isNaN(classLng)) {
-      return res.status(500).json({ error: 'Session location data is invalid. Contact admin.' });
+      return res.status(500).json({ error: 'Session location invalid. Contact admin.' });
     }
 
-    // ── Duplicate check by ROLL NUMBER ──
-    const dupRoll = await sql`
-      SELECT id FROM attendance WHERE session_id = ${sessionId} AND roll = ${roll.trim().toLowerCase()}
+    // ── DUPLICATE CHECKS ──
+    // Rule: Present = permanently blocked (attendance confirmed)
+    //       Absent  = delete old record, allow retry (student was out of range)
+
+    // 1. Check by Roll Number
+    const byRoll = await sql`
+      SELECT id, status FROM attendance
+      WHERE session_id = ${sessionId} AND roll = ${cleanRoll} LIMIT 1
     `;
-    if (dupRoll.length) {
-      return res.status(409).json({ error: 'Attendance already marked for this roll number in this session.' });
+    if (byRoll.length > 0) {
+      if (byRoll[0].status === 'present') {
+        return res.status(409).json({ error: 'Your attendance is already marked as Present for this session.' });
+      }
+      await sql`DELETE FROM attendance WHERE session_id = ${sessionId} AND roll = ${cleanRoll}`;
     }
 
-    // ── Duplicate check by EMAIL ──
-    const dupEmail = await sql`
-      SELECT id FROM attendance WHERE session_id = ${sessionId} AND email = ${email.trim().toLowerCase()}
+    // 2. Check by Email
+    const byEmail = await sql`
+      SELECT id, status FROM attendance
+      WHERE session_id = ${sessionId} AND email = ${cleanEmail} LIMIT 1
     `;
-    if (dupEmail.length) {
-      return res.status(409).json({ error: 'Attendance already marked from this email in this session.' });
+    if (byEmail.length > 0) {
+      if (byEmail[0].status === 'present') {
+        return res.status(409).json({ error: 'Attendance already marked as Present from this email.' });
+      }
+      await sql`DELETE FROM attendance WHERE session_id = ${sessionId} AND email = ${cleanEmail}`;
     }
 
-    // ── Accurate distance + GPS tolerance check ──
-    const geo = isWithinRange(
-      studentLat, studentLng,
-      classLat,   classLng,
-      radius,     gpsAccuracy
-    );
+    // 3. Check by Device ID (one phone per session)
+    // Only block if device already submitted PRESENT for this session.
+    // Same device can register for different sessions (training at 2:30, exam at 3:00).
+    if (cleanDevice) {
+      const byDevice = await sql`
+        SELECT id, status FROM attendance
+        WHERE session_id = ${sessionId} AND device_id = ${cleanDevice} LIMIT 1
+      `;
+      if (byDevice.length > 0) {
+        if (byDevice[0].status === 'present') {
+          return res.status(409).json({ error: 'This device has already submitted attendance for this session.' });
+        }
+        await sql`DELETE FROM attendance WHERE session_id = ${sessionId} AND device_id = ${cleanDevice}`;
+      }
+    }
 
+    // ── STRICT GPS CHECK — exact radius, no buffer ──
+    const geo    = checkPresence(studentLat, studentLng, classLat, classLng, radius);
     const status = geo.inRange ? 'present' : 'absent';
 
-    // ── Insert record ──
+    // ── Save record ──
     const rows = await sql`
       INSERT INTO attendance
         (session_id, name, roll, email, department, year,
-         status, distance, accuracy, lat, lng)
+         status, distance, accuracy, lat, lng, device_id)
       VALUES
         (${sessionId},
          ${name.trim()},
-         ${roll.trim().toLowerCase()},
-         ${email.trim().toLowerCase()},
+         ${cleanRoll},
+         ${cleanEmail},
          ${department},
          ${year},
          ${status},
          ${geo.distance},
-         ${Math.round(gpsAccuracy)},
+         ${Math.round(parseFloat(accuracy) || 0)},
          ${studentLat},
-         ${studentLng})
+         ${studentLng},
+         ${cleanDevice})
       RETURNING *
     `;
 
     res.status(201).json({
-      ok: true,
-      record: rows[0],
-      distance:        geo.distance,
-      effectiveRadius: geo.effectiveRadius,
-      accuracyBuffer:  geo.accuracyBuffer,
-      radius:          radius,
+      ok:       true,
+      record:   rows[0],
       status,
-      // Debug info shown to student so they understand result
-      debug: {
-        yourLocation:    `${studentLat.toFixed(6)}, ${studentLng.toFixed(6)}`,
-        classLocation:   `${classLat.toFixed(6)}, ${classLng.toFixed(6)}`,
-        rawDistance:     geo.distance,
-        setRadius:       radius,
-        gpsAccuracy:     Math.round(gpsAccuracy),
-        buffer:          geo.accuracyBuffer,
-        effectiveRadius: geo.effectiveRadius,
-      }
+      distance: geo.distance,
+      radius:   radius,
     });
 
   } catch (e) {
     if (e.message?.includes('unique') || e.message?.includes('duplicate')) {
       return res.status(409).json({ error: 'Attendance already marked for this session.' });
     }
-    console.error('mark.js error:', e);
+    // If device_id column doesn't exist yet, run migration
+    if (e.message?.includes('device_id')) {
+      return res.status(500).json({ error: 'Database needs migration. Run: node lib/db-migrate.js' });
+    }
+    console.error('mark.js error:', e.message);
     res.status(500).json({ error: 'Server error: ' + e.message });
   }
 }
